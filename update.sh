@@ -100,21 +100,38 @@ remove_unwanted_packages() {
         "shadowsocksr-libev" "dae" "daed" "mihomo" "geoview" "tailscale" "open-app-filter"
         "msd_lite"
     )
+    local packages_utils=(
+        "cups"
+    )
     local small8_packages=(
-        "ppp" "firewall" "dae" "daed" "daed-next" "libnftnl" "nftables" "dnsmasq"
+        "ppp" "firewall" "dae" "daed" "daed-next" "libnftnl" "nftables" "dnsmasq" "luci-app-alist" "alist"
     )
 
     for pkg in "${luci_packages[@]}"; do
-        \rm -rf ./feeds/luci/applications/$pkg
-        \rm -rf ./feeds/luci/themes/$pkg
+        if [[ -d ./feeds/luci/applications/$pkg ]]; then
+            \rm -rf ./feeds/luci/applications/$pkg
+        fi
+        if [[ -d ./feeds/luci/themes/$pkg ]]; then
+            \rm -rf ./feeds/luci/themes/$pkg
+        fi
     done
 
     for pkg in "${packages_net[@]}"; do
-        \rm -rf ./feeds/packages/net/$pkg
+        if [[ -d ./feeds/packages/net/$pkg ]]; then
+            \rm -rf ./feeds/packages/net/$pkg
+        fi
+    done
+
+    for pkg in "${packages_utils[@]}"; do
+        if [[ -d ./feeds/packages/utils/$pkg ]]; then
+            \rm -rf ./feeds/packages/utils/$pkg
+        fi
     done
 
     for pkg in "${small8_packages[@]}"; do
-        \rm -rf ./feeds/small8/$pkg
+        if [[ -d ./feeds/small8/$pkg ]]; then
+            \rm -rf ./feeds/small8/$pkg
+        fi
     done
 
     if [[ -d ./package/istore ]]; then
@@ -148,7 +165,7 @@ install_small8() {
         luci-app-store quickstart luci-app-quickstart luci-app-istorex luci-app-cloudflarespeedtest \
         luci-theme-argon netdata luci-app-netdata lucky luci-app-lucky luci-app-openclash luci-app-homeproxy \
         luci-app-amlogic nikki luci-app-nikki tailscale luci-app-tailscale oaf open-app-filter luci-app-oaf \
-        easytier luci-app-easytier msd_lite luci-app-msd_lite
+        easytier luci-app-easytier msd_lite luci-app-msd_lite cups luci-app-cupsd
 }
 
 install_feeds() {
@@ -213,7 +230,7 @@ install_fullconenat() {
 fix_mk_def_depends() {
     sed -i 's/libustream-mbedtls/libustream-openssl/g' $BUILD_DIR/include/target.mk 2>/dev/null
     if [ -f $BUILD_DIR/target/linux/qualcommax/Makefile ]; then
-        sed -i 's/wpad-basic-mbedtls/wpad-openssl/g' $BUILD_DIR/target/linux/qualcommax/Makefile
+        sed -i 's/wpad-openssl/wpad-mesh-openssl/g' $BUILD_DIR/target/linux/qualcommax/Makefile
     fi
 }
 
@@ -337,21 +354,26 @@ add_ax6600_led() {
     chmod +x "$athena_led_dir/root/etc/init.d/athena_led"
 }
 
-chanage_cpuusage() {
-    local luci_dir="$BUILD_DIR/feeds/luci/modules/luci-base/root/usr/share/rpcd/ucode/luci"
-    local imm_script1="$BUILD_DIR/package/base-files/files/sbin/cpuusage"
+change_cpuusage() {
+    local luci_rpc_path="$BUILD_DIR/feeds/luci/modules/luci-base/root/usr/share/rpcd/ucode/luci"
+    local qualcommax_sbin_dir="$BUILD_DIR/target/linux/qualcommax/base-files/sbin"
+    local filogic_sbin_dir="$BUILD_DIR/target/linux/mediatek/filogic/base-files/sbin"
 
-    if [ -f $luci_dir ]; then
-        sed -i "s#const fd = popen('top -n1 | awk \\\'/^CPU/ {printf(\"%d%\", 100 - \$8)}\\\'')#const cpuUsageCommand = access('/sbin/cpuusage') ? '/sbin/cpuusage' : 'top -n1 | awk \\\'/^CPU/ {printf(\"%d%\", 100 - \$8)}\\\''#g" $luci_dir
-        sed -i '/cpuUsageCommand/a \\t\t\tconst fd = popen(cpuUsageCommand);' $luci_dir
+    # Modify LuCI RPC script to prefer our custom cpuusage script
+    if [ -f "$luci_rpc_path" ]; then
+        sed -i "s#const fd = popen('top -n1 | awk \\\'/^CPU/ {printf(\"%d%\", 100 - \$8)}\\\'')#const cpuUsageCommand = access('/sbin/cpuusage') ? '/sbin/cpuusage' : 'top -n1 | awk \\\'/^CPU/ {printf(\"%d%\", 100 - \$8)}\\\''#g" "$luci_rpc_path"
+        sed -i '/cpuUsageCommand/a \\t\t\tconst fd = popen(cpuUsageCommand);' "$luci_rpc_path"
     fi
 
-    if [ -f "$imm_script1" ]; then
-        rm -f "$imm_script1"
+    # Remove old script if it exists from a previous build
+    local old_script_path="$BUILD_DIR/package/base-files/files/sbin/cpuusage"
+    if [ -f "$old_script_path" ]; then
+        rm -f "$old_script_path"
     fi
 
-    install -Dm755 "$BASE_PATH/patches/cpuusage" "$BUILD_DIR/target/linux/qualcommax/base-files/sbin/cpuusage"
-    install -Dm755 "$BASE_PATH/patches/hnatusage" "$BUILD_DIR/target/linux/mediatek/filogic/base-files/sbin/cpuusage"
+    # Install platform-specific cpuusage scripts
+    install -Dm755 "$BASE_PATH/patches/cpuusage" "$qualcommax_sbin_dir/cpuusage"
+    install -Dm755 "$BASE_PATH/patches/hnatusage" "$filogic_sbin_dir/cpuusage"
 }
 
 update_tcping() {
@@ -501,25 +523,43 @@ update_dnsmasq_conf() {
 # 更新版本
 update_package() {
     local dir=$(find "$BUILD_DIR/package" \( -type d -o -type l \) -name $1)
-    if [ -z $dir ]; then
+    if [ -z "$dir" ]; then
         return 0
+    fi
+    local branch=$2
+    if [ -z "$branch" ]; then
+        branch="releases"
     fi
     local mk_path="$dir/Makefile"
     if [ -f "$mk_path" ]; then
         # 提取repo
-        local PKG_REPO=$(grep -oE "^PKG_SOURCE_URL.*github.com(/[-_a-zA-Z0-9]{1,}){2}" $mk_path | awk -F"/" '{print $(NF - 1) "/" $NF}')
-        if [ -z $PKG_REPO ]; then
-            return 0
+        local PKG_REPO=$(grep -oE "^PKG_GIT_URL.*github.com(/[-_a-zA-Z0-9]{1,}){2}" $mk_path | awk -F"/" '{print $(NF - 1) "/" $NF}')
+        if [ -z "$PKG_REPO" ]; then
+            PKG_REPO=$(grep -oE "^PKG_SOURCE_URL.*github.com(/[-_a-zA-Z0-9]{1,}){2}" $mk_path | awk -F"/" '{print $(NF - 1) "/" $NF}')
+            if [ -z "$PKG_REPO" ]; then
+                return 0
+            fi
         fi
-        local PKG_VER=$(curl -sL "https://api.github.com/repos/$PKG_REPO/releases" | jq -r '.[0].tag_name')
+        local PKG_VER=$(curl -sL "https://api.github.com/repos/$PKG_REPO/$branch" | jq -r '.[0] | .tag_name // .name')
+        if [ -n "$3" ]; then
+            PKG_VER=$3
+        fi
+        local COMMIT_SHA=$(curl -sL "https://api.github.com/repos/$PKG_REPO/tags" | jq -r '.[] | select(.name=="'$PKG_VER'") | .commit.sha' | cut -c1-7)
+        if [ -n "$COMMIT_SHA" ]; then
+            sed -i 's/^PKG_GIT_SHORT_COMMIT:=.*/PKG_GIT_SHORT_COMMIT:='$COMMIT_SHA'/g' $mk_path
+        fi
         PKG_VER=$(echo $PKG_VER | grep -oE "[\.0-9]{1,}")
 
         local PKG_NAME=$(awk -F"=" '/PKG_NAME:=/ {print $NF}' $mk_path | grep -oE "[-_:/\$\(\)\?\.a-zA-Z0-9]{1,}")
         local PKG_SOURCE=$(awk -F"=" '/PKG_SOURCE:=/ {print $NF}' $mk_path | grep -oE "[-_:/\$\(\)\?\.a-zA-Z0-9]{1,}")
-        local PKG_SOURCE_URL=$(awk -F"=" '/PKG_SOURCE_URL:=/ {print $NF}' $mk_path | grep -oE "[-_:/\$\(\)\?\.a-zA-Z0-9]{1,}")
+        local PKG_SOURCE_URL=$(awk -F"=" '/PKG_SOURCE_URL:=/ {print $NF}' $mk_path | grep -oE "[-_:/\$\(\)\{\}\?\.a-zA-Z0-9]{1,}")
+        local PKG_GIT_URL=$(awk -F"=" '/PKG_GIT_URL:=/ {print $NF}' $mk_path)
+        local PKG_GIT_REF=$(awk -F"=" '/PKG_GIT_REF:=/ {print $NF}' $mk_path)
 
+        PKG_SOURCE_URL=${PKG_SOURCE_URL//\$\(PKG_GIT_URL\)/$PKG_GIT_URL}
+        PKG_SOURCE_URL=${PKG_SOURCE_URL//\$\(PKG_GIT_REF\)/$PKG_GIT_REF}
         PKG_SOURCE_URL=${PKG_SOURCE_URL//\$\(PKG_NAME\)/$PKG_NAME}
-        PKG_SOURCE_URL=${PKG_SOURCE_URL//\$\(PKG_VERSION\)/$PKG_VER}
+        PKG_SOURCE_URL=$(echo "$PKG_SOURCE_URL" | sed "s/\${PKG_VERSION}/$PKG_VER/g; s/\$(PKG_VERSION)/$PKG_VER/g")
         PKG_SOURCE=${PKG_SOURCE//\$\(PKG_NAME\)/$PKG_NAME}
         PKG_SOURCE=${PKG_SOURCE//\$\(PKG_VERSION\)/$PKG_VER}
 
@@ -599,12 +639,12 @@ update_mosdns_deconfig() {
 }
 
 fix_quickstart() {
-    local qs_index_path="$BUILD_DIR/feeds/small8/luci-app-quickstart/htdocs/luci-static/quickstart/index.js"
-    local fix_path="$BASE_PATH/patches/quickstart_index.js"
-    if [ -f "$qs_index_path" ] && [ -f "$fix_path" ]; then
-        cat "$fix_path" >"$qs_index_path"
-    else
-        echo "Quickstart index.js 或补丁文件不存在，请检查路径是否正确。"
+    local file_path="$BUILD_DIR/feeds/small8/luci-app-quickstart/luasrc/controller/istore_backend.lua"
+    # 下载新的istore_backend.lua文件并覆盖
+    if [ -f "$file_path" ]; then
+        \rm -f "$file_path"
+        curl -L https://gist.githubusercontent.com/puteulanus/1c180fae6bccd25e57eb6d30b7aa28aa/raw/istore_backend.lua \
+            -o "$file_path"
     fi
 }
 
@@ -666,7 +706,7 @@ update_proxy_app_menu_location() {
     local passwall_path="$BUILD_DIR/package/feeds/small8/luci-app-passwall/luasrc/controller/passwall.lua"
     if [ -d "${passwall_path%/*}" ] && [ -f "$passwall_path" ]; then
         local pos=$(grep -n "entry" "$passwall_path" | head -n 1 | awk -F ":" '{print $1}')
-        if [ -n $pos ]; then
+        if [ -n "$pos" ]; then
             sed -i ''${pos}'i\	entry({"admin", "proxy"}, firstchild(), "Proxy", 30).dependent = false' "$passwall_path"
             sed -i 's/"services"/"proxy"/g' "$passwall_path"
         fi
@@ -690,7 +730,7 @@ update_dns_app_menu_location() {
     local smartdns_path="$BUILD_DIR/package/feeds/small8/luci-app-smartdns/luasrc/controller/smartdns.lua"
     if [ -d "${smartdns_path%/*}" ] && [ -f "$smartdns_path" ]; then
         local pos=$(grep -n "entry" "$smartdns_path" | head -n 1 | awk -F ":" '{print $1}')
-        if [ -n $pos ]; then
+        if [ -n "$pos" ]; then
             sed -i ''${pos}'i\	entry({"admin", "dns"}, firstchild(), "DNS", 29).dependent = false' "$smartdns_path"
             sed -i 's/"services"/"dns"/g' "$smartdns_path"
         fi
@@ -737,11 +777,32 @@ update_geoip() {
 }
 
 update_lucky() {
-    local version=$(find "$BASE_PATH/patches" -name "lucky*" -printf "%f\n" | head -n 1 | awk -F'_' '{print $2}')
-    local mk_dir="$BUILD_DIR/feeds/small8/lucky/Makefile"
-    if [ -d "${mk_dir%/*}" ] && [ -f "$mk_dir" ]; then
-        sed -i '/Build\/Prepare/ a\	[ -f $(TOPDIR)/../patches/lucky_'${version}'_Linux_$(LUCKY_ARCH)_wanji.tar.gz ] && install -Dm644 $(TOPDIR)/../patches/lucky_'${version}'_Linux_$(LUCKY_ARCH)_wanji.tar.gz $(PKG_BUILD_DIR)/$(PKG_NAME)_$(PKG_VERSION)_Linux_$(LUCKY_ARCH).tar.gz' "$mk_dir"
-        sed -i '/wget/d' "$mk_dir"
+    # 从补丁文件名中提取版本号
+    local version
+    version=$(find "$BASE_PATH/patches" -name "lucky_*.tar.gz" -printf "%f\n" | head -n 1 | sed -n 's/^lucky_\(.*\)_Linux.*$/\1/p')
+    if [ -z "$version" ]; then
+        echo "Warning: 未找到 lucky 补丁文件，跳过更新。" >&2
+        return 1
+    fi
+
+    local makefile_path="$BUILD_DIR/feeds/small8/lucky/Makefile"
+    if [ ! -f "$makefile_path" ]; then
+        echo "Warning: lucky Makefile not found. Skipping." >&2
+        return 1
+    fi
+
+    echo "正在更新 lucky Makefile..."
+    # 使用本地补丁文件，而不是下载
+    local patch_line="\\t[ -f \$(TOPDIR)/../patches/lucky_${version}_Linux_\$(LUCKY_ARCH)_wanji.tar.gz ] && install -Dm644 \$(TOPDIR)/../patches/lucky_${version}_Linux_\$(LUCKY_ARCH)_wanji.tar.gz \$(PKG_BUILD_DIR)/\$(PKG_NAME)_\$(PKG_VERSION)_Linux_\$(LUCKY_ARCH).tar.gz"
+
+    # 确保 Build/Prepare 部分存在，然后在其后添加我们的行
+    if grep -q "Build/Prepare" "$makefile_path"; then
+        sed -i "/Build\\/Prepare/a\\$patch_line" "$makefile_path"
+        # 删除任何现有的 wget 命令
+        sed -i '/wget/d' "$makefile_path"
+        echo "lucky Makefile 更新完成。"
+    else
+        echo "Warning: lucky Makefile 中未找到 'Build/Prepare'。跳过。" >&2
     fi
 }
 
@@ -751,14 +812,84 @@ fix_rust_compile_error() {
     fi
 }
 
-update_smartdns_luci() {
-    if [ -d "$BUILD_DIR/feeds/small8/luci-app-smartdns" ]; then
-        rm -rf "$BUILD_DIR/feeds/small8/luci-app-smartdns"
-    fi
-    git clone --depth 1 -b master https://github.com/pymumu/luci-app-smartdns.git "$BUILD_DIR/feeds/small8/luci-app-smartdns"
+update_smartdns() {
+    local feeds_dir="$BUILD_DIR/feeds/small8"
+    local luci_app_smartdns_path="$feeds_dir/luci-app-smartdns"
+    local old_smartdns_pkg_path="$feeds_dir/smartdns"
+    local new_smartdns_pkg_path="$feeds_dir/openwrt-smartdns"
+    local tmp_dir
 
-    if [ -f "$BUILD_DIR/feeds/small8/luci-app-smartdns/Makefile" ]; then
-        sed -i 's/\.\.\/\.\.\/luci\.mk/\$(TOPDIR)\/feeds\/luci\/luci\.mk/g' "$BUILD_DIR/feeds/small8/luci-app-smartdns/Makefile"
+    echo "正在更新 luci-app-smartdns..."
+    # 删除旧版并克隆新版
+    \rm -rf "$luci_app_smartdns_path"
+    if ! git clone --depth 1 -b master https://github.com/pymumu/luci-app-smartdns.git "$luci_app_smartdns_path"; then
+        echo "错误：克隆 luci-app-smartdns 失败。" >&2
+        return 1
+    fi
+
+    # 修复 Makefile 中的路径
+    local makefile_path="$luci_app_smartdns_path/Makefile"
+    if [ -f "$makefile_path" ]; then
+        sed -i 's/\.\.\/\.\.\/luci\.mk/$(TOPDIR)\/feeds\/luci\/luci\.mk/g' "$makefile_path"
+    fi
+
+    echo "正在更新 smartdns..."
+
+    # 使用临时目录克隆
+    tmp_dir=$(mktemp -d)
+    if ! git clone --depth 1 -b master https://github.com/pymumu/openwrt-smartdns.git "$tmp_dir"; then
+        echo "错误：克隆 openwrt-smartdns 仓库失败。" >&2
+        rm -rf "$tmp_dir"
+        return 1
+    else
+        # 删除旧版
+        rm -rf "$old_smartdns_pkg_path"
+        mv "$tmp_dir" "$new_smartdns_pkg_path"
+
+        # 修复 Makefile 中的路径
+        makefile_path="$new_smartdns_pkg_path/Makefile"
+        if [ -f "$makefile_path" ]; then
+            sed -i 's/\.\.\/\.\.\/lang/$(TOPDIR)\/feeds\/packages\/lang/g' "$makefile_path"
+        fi
+    fi
+
+    echo "SmartDNS 更新完成。"
+}
+
+update_diskman() {
+    local path="$BUILD_DIR/feeds/luci/applications/luci-app-diskman"
+    if [ -d "$path" ]; then
+        cd "$BUILD_DIR/feeds/luci/applications" || return # 显式路径避免歧义
+        \rm -rf "luci-app-diskman"                        # 直接删除目标目录
+
+        git clone --filter=blob:none --no-checkout https://github.com/lisaac/luci-app-diskman.git diskman || return
+        cd diskman || return
+
+        git sparse-checkout init --cone
+        git sparse-checkout set applications/luci-app-diskman || return # 错误处理
+
+        git checkout --quiet # 静默检出避免冗余输出
+
+        mv applications/luci-app-diskman ../luci-app-diskman || return # 添加错误检查
+        cd .. || return
+        \rm -rf diskman
+        cd "$BUILD_DIR"
+
+        sed -i 's/fs-ntfs /fs-ntfs3 /g' "$path/Makefile"
+        sed -i '/ntfs-3g-utils /d' "$path/Makefile"
+    fi
+}
+
+fix_samba4() {
+    local SAMBA4_MAKEFILE="$BUILD_DIR/feeds/packages/net/samba4/Makefile"
+
+    # 检查 samba4-libs 的依赖中是否已经包含了 libcrypt-compat
+    if ! sed -n '/define Package\/samba4-libs/,/endef/p' "$SAMBA4_MAKEFILE" | grep -q 'DEPENDS:=.*+libcrypt-compat'; then
+        echo "Adding +libcrypt-compat dependency to samba4-libs..."
+        # 使用更健壮的命令来添加依赖
+        sed -i '/define Package\/samba4-libs/,/endef/s/^\(\s*DEPENDS:=\)/\1 +libcrypt-compat/' "$SAMBA4_MAKEFILE"
+    else
+        echo "Dependency +libcrypt-compat already exists in samba4-libs."
     fi
 }
 
@@ -781,7 +912,7 @@ main() {
     # fix_build_for_openssl
     update_ath11k_fw
     # fix_mkpkg_format_invalid
-    chanage_cpuusage
+    change_cpuusage
     update_tcping
     add_ax6600_led
     set_custom_task
@@ -803,12 +934,18 @@ main() {
     add_gecoosac
     update_lucky
     fix_rust_compile_error
-    update_smartdns_luci
+    # update_smartdns 暂不更新，openwrt-smartdns不适配
+    update_diskman
+    fix_samba4
     install_feeds
     support_fw4_adg
     update_script_priority
     fix_easytier
     update_geoip
+    update_package "runc" "releases" "v1.2.6"
+    update_package "containerd" "releases" "v1.7.27"
+    update_package "docker" "tags" "v28.2.2"
+    update_package "dockerd" "releases" "v28.2.2"
     # update_package "xray-core"
     # update_proxy_app_menu_location
     # update_dns_app_menu_location
